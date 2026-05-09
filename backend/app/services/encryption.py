@@ -6,11 +6,30 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 @dataclass(frozen=True)
 class EncryptedToken:
-    """Holds the three fields written to platform_connections for one token."""
+    """Holds the fields written to platform_connections for one token.
+
+    Access token: stored as separate columns (ciphertext, token_iv, token_tag).
+    Refresh token: stored as a single self-contained blob via to_blob() so its
+    IV and tag travel with it without needing extra schema columns.
+    """
     ciphertext: bytes
     iv: bytes        # 12-byte GCM nonce, unique per encryption
     tag: bytes       # 16-byte GCM authentication tag
     key_id: str      # references which key version produced this (for rotation)
+
+    def to_blob(self) -> bytes:
+        """Pack into iv (12) + ciphertext + tag (16) for single-column storage."""
+        return self.iv + self.ciphertext + self.tag
+
+    @classmethod
+    def from_blob(cls, blob: bytes, key_id: str) -> "EncryptedToken":
+        """Unpack a blob produced by to_blob()."""
+        if len(blob) < 28:  # 12 iv + 16 tag minimum
+            raise ValueError(f"Blob too short to be a valid EncryptedToken: {len(blob)} bytes")
+        iv = blob[:12]
+        tag = blob[-16:]
+        ciphertext = blob[12:-16]
+        return cls(ciphertext=ciphertext, iv=iv, tag=tag, key_id=key_id)
 
 
 class TokenEncryptionService:

@@ -137,3 +137,43 @@ def test_factory_service_can_roundtrip():
     from app.services.encryption import get_encryption_service
     svc = get_encryption_service()
     assert svc.decrypt(svc.encrypt("test-token")) == "test-token"
+
+
+# ── Blob serialization (to_blob / from_blob) ──────────────────────────────────
+
+def test_to_blob_then_from_blob_roundtrip(svc):
+    token = svc.encrypt("refresh-token-value")
+    blob = token.to_blob()
+    restored = EncryptedToken.from_blob(blob, key_id=token.key_id)
+    assert restored.iv == token.iv
+    assert restored.ciphertext == token.ciphertext
+    assert restored.tag == token.tag
+    assert restored.key_id == token.key_id
+
+
+def test_blob_can_be_decrypted(svc):
+    plaintext = "1//google-refresh-token"
+    token = svc.encrypt(plaintext)
+    blob = token.to_blob()
+    restored = EncryptedToken.from_blob(blob, key_id="test-v1")
+    assert svc.decrypt(restored) == plaintext
+
+
+def test_blob_length_equals_iv_plus_ciphertext_plus_tag(svc):
+    token = svc.encrypt("test-value")
+    blob = token.to_blob()
+    assert len(blob) == 12 + len(token.ciphertext) + 16
+
+
+def test_from_blob_too_short_raises():
+    with pytest.raises(ValueError, match="too short"):
+        EncryptedToken.from_blob(b"tooshort", key_id="v1")
+
+
+def test_blob_tamper_raises_on_decrypt(svc):
+    blob = svc.encrypt("secret").to_blob()
+    tampered = bytearray(blob)
+    tampered[5] ^= 0xFF
+    restored = EncryptedToken.from_blob(bytes(tampered), key_id="test-v1")
+    with pytest.raises(Exception):
+        svc.decrypt(restored)

@@ -22,6 +22,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    from app.api.routes.auth import router as auth_router
+    _app.include_router(auth_router)
+
     @_app.get("/health", tags=["meta"])
     async def health_check() -> dict:
         return {"status": "ok", "version": "0.1.0"}
