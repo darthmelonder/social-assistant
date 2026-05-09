@@ -3,6 +3,11 @@
 Revision ID: 001
 Revises:
 Create Date: 2026-05-09
+
+Enum strategy: each enum type is created by SQLAlchemy when first encountered
+in create_table (create_type=True, the default). Subsequent tables that share
+the same enum use create_type=False to avoid a duplicate-type error.
+Downgrade drops enum types explicitly after dropping all tables.
 """
 from typing import Sequence, Union
 
@@ -17,35 +22,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # ── Enum types ────────────────────────────────────────────────────────────
-    op.execute(sa.text(
-        "CREATE TYPE platform_type AS ENUM ('gmail', 'whatsapp', 'slack', 'outlook')"
-    ))
-    op.execute(sa.text(
-        "CREATE TYPE connection_status AS ENUM ('active', 'error', 'revoked', 'syncing', 'pending')"
-    ))
-    op.execute(sa.text(
-        "CREATE TYPE message_folder AS ENUM ('inbox', 'sent', 'draft', 'spam', 'trash', 'other')"
-    ))
-    op.execute(sa.text(
-        "CREATE TYPE priority_level AS ENUM ('urgent', 'important', 'maybe', 'skip')"
-    ))
-    op.execute(sa.text(
-        "CREATE TYPE sentiment_type AS ENUM ('positive', 'neutral', 'negative', 'mixed')"
-    ))
-    op.execute(sa.text(
-        "CREATE TYPE draft_status AS ENUM "
-        "('pending_review', 'approved', 'rejected', 'copied', 'superseded')"
-    ))
-    op.execute(sa.text(
-        "CREATE TYPE job_type AS ENUM "
-        "('full_sync', 'incremental_sync', 'profile_rebuild', 'triage', 'draft_generate')"
-    ))
-    op.execute(sa.text(
-        "CREATE TYPE job_status AS ENUM "
-        "('queued', 'running', 'completed', 'failed', 'cancelled', 'retrying')"
-    ))
-
     # ── users ─────────────────────────────────────────────────────────────────
     op.create_table(
         "users",
@@ -61,16 +37,21 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index("ix_users_email", "users", ["email"], unique=True)
-    op.create_index("ix_users_is_active", "users", ["is_active"],
-                    postgresql_where=sa.text("is_active = true"))
+    op.create_index(
+        "ix_users_is_active", "users", ["is_active"],
+        postgresql_where=sa.text("is_active = true"),
+    )
 
     # ── platform_connections ──────────────────────────────────────────────────
+    # First use of platform_type and connection_status — SQLAlchemy creates them here.
     op.create_table(
         "platform_connections",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("user_id", postgresql.UUID(as_uuid=True),
                   sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("platform", sa.Enum(name="platform_type", create_type=False), nullable=False),
+        sa.Column("platform",
+                  sa.Enum("gmail", "whatsapp", "slack", "outlook", name="platform_type"),
+                  nullable=False),
         sa.Column("platform_account_id", sa.String(), nullable=False),
         sa.Column("platform_email", sa.String(), nullable=True),
         sa.Column("encrypted_access_token", postgresql.BYTEA(), nullable=False),
@@ -81,7 +62,9 @@ def upgrade() -> None:
         sa.Column("token_expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("granted_scopes", postgresql.ARRAY(sa.String()), nullable=False,
                   server_default="{}"),
-        sa.Column("status", sa.Enum(name="connection_status", create_type=False),
+        sa.Column("status",
+                  sa.Enum("active", "error", "revoked", "syncing", "pending",
+                          name="connection_status"),
                   nullable=False, server_default="pending"),
         sa.Column("last_history_id", sa.String(), nullable=True),
         sa.Column("last_synced_at", sa.DateTime(timezone=True), nullable=True),
@@ -100,6 +83,7 @@ def upgrade() -> None:
     )
 
     # ── threads ───────────────────────────────────────────────────────────────
+    # Second use of platform_type — create_type=False to avoid duplicate.
     op.create_table(
         "threads",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
@@ -107,7 +91,10 @@ def upgrade() -> None:
                   sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
         sa.Column("connection_id", postgresql.UUID(as_uuid=True),
                   sa.ForeignKey("platform_connections.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("platform", sa.Enum(name="platform_type", create_type=False), nullable=False),
+        sa.Column("platform",
+                  sa.Enum("gmail", "whatsapp", "slack", "outlook",
+                          name="platform_type", create_type=False),
+                  nullable=False),
         sa.Column("platform_thread_id", sa.String(), nullable=False),
         sa.Column("subject", sa.Text(), nullable=True),
         sa.Column("snippet", sa.Text(), nullable=True),
@@ -128,7 +115,7 @@ def upgrade() -> None:
     op.create_index("ix_threads_user_id", "threads", ["user_id"])
     op.create_index("ix_threads_connection_id", "threads", ["connection_id"])
     op.create_index(
-        "ix_threads_user_last_msg", "threads", ["user_id", sa.text("last_message_at DESC")],
+        "ix_threads_user_last_msg", "threads", ["user_id", "last_message_at"],
         postgresql_where=sa.text("deleted_at IS NULL"),
     )
     op.create_index(
@@ -137,6 +124,7 @@ def upgrade() -> None:
     )
 
     # ── messages ──────────────────────────────────────────────────────────────
+    # First use of message_folder.
     op.create_table(
         "messages",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
@@ -157,7 +145,9 @@ def upgrade() -> None:
         sa.Column("body_html", sa.Text(), nullable=True),
         sa.Column("snippet", sa.Text(), nullable=True),
         sa.Column("internal_date", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("folder", sa.Enum(name="message_folder", create_type=False),
+        sa.Column("folder",
+                  sa.Enum("inbox", "sent", "draft", "spam", "trash", "other",
+                          name="message_folder"),
                   nullable=False, server_default="inbox"),
         sa.Column("labels", postgresql.ARRAY(sa.String()), nullable=False, server_default="{}"),
         sa.Column("has_attachments", sa.Boolean(), nullable=False, server_default=sa.text("false")),
@@ -173,7 +163,7 @@ def upgrade() -> None:
     op.create_index("ix_messages_thread_id", "messages", ["thread_id"])
     op.create_index("ix_messages_user_id", "messages", ["user_id"])
     op.create_index(
-        "ix_messages_sent_by_user", "messages", ["user_id", sa.text("internal_date DESC")],
+        "ix_messages_sent_by_user", "messages", ["user_id", "internal_date"],
         postgresql_where=sa.text("is_sent_by_user = true AND deleted_at IS NULL"),
     )
     op.create_index(
@@ -183,6 +173,7 @@ def upgrade() -> None:
     )
 
     # ── thread_analyses ───────────────────────────────────────────────────────
+    # First use of priority_level and sentiment_type.
     op.create_table(
         "thread_analyses",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
@@ -190,12 +181,16 @@ def upgrade() -> None:
                   sa.ForeignKey("threads.id", ondelete="CASCADE"), nullable=False),
         sa.Column("user_id", postgresql.UUID(as_uuid=True),
                   sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("priority", sa.Enum(name="priority_level", create_type=False), nullable=False),
+        sa.Column("priority",
+                  sa.Enum("urgent", "important", "maybe", "skip", name="priority_level"),
+                  nullable=False),
         sa.Column("priority_confidence", sa.Numeric(4, 3), nullable=True),
         sa.Column("summary", sa.Text(), nullable=False),
         sa.Column("action_items", postgresql.JSONB(), nullable=False, server_default="[]"),
         sa.Column("requires_reply", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-        sa.Column("sentiment", sa.Enum(name="sentiment_type", create_type=False), nullable=True),
+        sa.Column("sentiment",
+                  sa.Enum("positive", "neutral", "negative", "mixed", name="sentiment_type"),
+                  nullable=True),
         sa.Column("source_message_ids", postgresql.ARRAY(sa.String()), nullable=False),
         sa.Column("source_message_hash", sa.String(), nullable=False),
         sa.Column("model_id", sa.String(), nullable=False),
@@ -226,6 +221,7 @@ def upgrade() -> None:
     )
 
     # ── drafts ────────────────────────────────────────────────────────────────
+    # First use of draft_status.
     op.create_table(
         "drafts",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
@@ -239,7 +235,9 @@ def upgrade() -> None:
         sa.Column("body_plain", sa.Text(), nullable=False),
         sa.Column("body_html", sa.Text(), nullable=True),
         sa.Column("tone_used", sa.String(), nullable=True),
-        sa.Column("status", sa.Enum(name="draft_status", create_type=False),
+        sa.Column("status",
+                  sa.Enum("pending_review", "approved", "rejected", "copied", "superseded",
+                          name="draft_status"),
                   nullable=False, server_default="pending_review"),
         sa.Column("user_edited_body", sa.Text(), nullable=True),
         sa.Column("feedback_note", sa.Text(), nullable=True),
@@ -302,6 +300,7 @@ def upgrade() -> None:
     )
 
     # ── sync_jobs ─────────────────────────────────────────────────────────────
+    # First use of job_type and job_status.
     op.create_table(
         "sync_jobs",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
@@ -309,8 +308,13 @@ def upgrade() -> None:
                   sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
         sa.Column("connection_id", postgresql.UUID(as_uuid=True),
                   sa.ForeignKey("platform_connections.id"), nullable=True),
-        sa.Column("job_type", sa.Enum(name="job_type", create_type=False), nullable=False),
-        sa.Column("status", sa.Enum(name="job_status", create_type=False),
+        sa.Column("job_type",
+                  sa.Enum("full_sync", "incremental_sync", "profile_rebuild", "triage",
+                          "draft_generate", name="job_type"),
+                  nullable=False),
+        sa.Column("status",
+                  sa.Enum("queued", "running", "completed", "failed", "cancelled", "retrying",
+                          name="job_status"),
                   nullable=False, server_default="queued"),
         sa.Column("queue_job_id", sa.String(), nullable=True),
         sa.Column("attempt_number", sa.Integer(), nullable=False, server_default="1"),
@@ -338,6 +342,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Drop tables in reverse FK dependency order
     op.drop_table("sync_jobs")
     op.drop_table("user_profiles")
     op.drop_table("drafts")
@@ -347,6 +352,7 @@ def downgrade() -> None:
     op.drop_table("platform_connections")
     op.drop_table("users")
 
+    # Drop enum types created during upgrade
     op.execute(sa.text("DROP TYPE IF EXISTS job_status"))
     op.execute(sa.text("DROP TYPE IF EXISTS job_type"))
     op.execute(sa.text("DROP TYPE IF EXISTS draft_status"))
