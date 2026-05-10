@@ -50,6 +50,7 @@ def _build_participants(messages: list[RawMessage]) -> list[dict]:
             }
         for addr in msg.to_emails:
             if addr and addr not in seen:
+                # to_emails carries bare addresses (no display name) — name is unavailable
                 seen[addr] = {"email": addr, "name": None, "role": "recipient"}
     return list(seen.values())
 
@@ -65,7 +66,10 @@ async def upsert_thread_with_messages(
 ) -> uuid.UUID:
     """Upsert one Thread and all its Messages. Returns the Thread's UUID.
 
-    All raw_messages must share the same platform_thread_id.
+    Every RawMessage carries platform_thread_id — the connector populates it
+    from the Gmail thread object that wraps each message. All messages passed
+    here must share the same platform_thread_id (the worker groups them before
+    calling this function).
     Caller is responsible for flushing/committing.
     """
     if not raw_messages:

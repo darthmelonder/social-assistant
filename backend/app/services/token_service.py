@@ -72,7 +72,7 @@ async def get_valid_access_token(
         new_bundle = await connector.refresh_access_token(refresh_token_str)
     except Exception as exc:
         raise TokenRefreshError(
-            f"Connection {conn.id}: Google token refresh failed"
+            f"Connection {conn.id}: platform token refresh failed"
         ) from exc
 
     # Re-encrypt and persist the new access token
