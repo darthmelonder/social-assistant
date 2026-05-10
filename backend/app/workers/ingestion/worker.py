@@ -88,6 +88,8 @@ async def run_full_sync(
 
     access_token = await get_valid_access_token(conn, connector, db)
 
+    # max_results=100 is the page size (threads per API call), not the total.
+    # The loop below pages through ALL threads until next_cursor is None.
     options = FetchOptions(folders=["inbox", "sent"], max_results=100)
     cursor: str | None = job.cursor          # None = fresh start; str = crash resume
     messages_processed: int = job.messages_processed or 0
@@ -140,6 +142,11 @@ async def run_incremental_sync(
     try:
         changes = await connector.fetch_changes(access_token, conn.last_history_id)
     except CheckpointExpiredError:
+        # Gmail retains history for ~30 days. Under normal operation (syncing
+        # every few minutes) this path is never hit — the historyId is always
+        # recent. It only triggers after a long outage (> 30 days with no sync).
+        # Marking the connection with an error signals the scheduler to enqueue
+        # a fresh full_sync_job to rebuild from scratch.
         await update_connection_sync_error(
             db, conn.id, "historyId expired; full re-sync required"
         )

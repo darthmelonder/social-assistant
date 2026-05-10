@@ -32,6 +32,9 @@ async def shutdown(ctx: dict) -> None:
 
 
 class WorkerSettings:
+    # ARQ dispatches jobs by function __name__, not by list position.
+    # Order here does not matter — clients enqueue by name string, e.g.
+    #   await arq.enqueue_job("full_sync_job", connection_id=..., job_id=...)
     functions = [full_sync_job, incremental_sync_job]
     on_startup = startup
     on_shutdown = shutdown
