@@ -287,9 +287,9 @@ async def test_build_profile_passes_model_to_api():
 # ── PROMPT_TEMPLATE_HASH ──────────────────────────────────────────────────────
 
 def test_prompt_template_hash_is_deterministic():
-    from app.workers.profile.builder import _SYSTEM_PROMPT
+    from app.workers.profile.prompts import PROFILE_SYSTEM_PROMPT
     import hashlib
-    expected = hashlib.sha256(_SYSTEM_PROMPT.encode()).hexdigest()[:16]
+    expected = hashlib.sha256(PROFILE_SYSTEM_PROMPT.encode()).hexdigest()[:16]
     assert PROMPT_TEMPLATE_HASH == expected
 
 

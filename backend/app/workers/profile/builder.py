@@ -1,7 +1,7 @@
 """Profile builder — calls Claude to analyse a user's sent emails.
 
 Prompt structure (see CLAUDE.md):
-  SYSTEM [cached]  instruction + output JSON schema
+  SYSTEM [cached]  instruction + output JSON schema  (lives in prompts.py)
   USER   [varies]  formatted sent email samples
 
 The system block is marked cache_control=ephemeral so repeated calls
@@ -9,45 +9,18 @@ The system block is marked cache_control=ephemeral so repeated calls
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import dataclass, field
 
 import anthropic
 
+from app.workers.profile.prompts import PROFILE_PROMPT_HASH, PROFILE_SYSTEM_PROMPT
 from app.workers.profile.sampler import SentMessageSample
 
-# ── Prompt template ───────────────────────────────────────────────────────────
-
-_SYSTEM_PROMPT = """\
-You are an expert at analysing email communication patterns.
-Your task is to extract a behavioural and stylistic profile from a user's sent emails.
-
-Output a single JSON object with exactly these fields:
-{
-  "voice_summary": "<2-3 sentence prose description of the user's writing voice and style>",
-  "tone_attributes": ["<adj>", ...],
-  "avg_email_length_words": <integer or null>,
-  "formality_score": <float 0.0-1.0 or null>,
-  "vocabulary_sample": ["<characteristic phrase or word>", ...],
-  "topic_clusters": [
-    { "topic": "<name>", "frequency": <0.0-1.0>, "keywords": ["<word>", ...] }
-  ],
-  "greeting_patterns": ["<opening phrase>", ...],
-  "sign_off_patterns": ["<closing phrase>", ...]
-}
-
-Guidelines:
-- tone_attributes: 3-6 single adjectives (e.g. "professional", "concise", "warm")
-- vocabulary_sample: 8-12 phrases or words that distinctively characterise this writer
-- topic_clusters: up to 5 recurring subject areas, ordered by frequency descending
-- formality_score: 0.0 = very casual/informal, 1.0 = highly formal
-- Return ONLY the JSON object — no markdown fences, no explanation text.
-"""
-
-# Hash of the prompt used to detect when the template changes
-PROMPT_TEMPLATE_HASH: str = hashlib.sha256(_SYSTEM_PROMPT.encode()).hexdigest()[:16]
+# Re-export so callers that previously imported PROMPT_TEMPLATE_HASH from here
+# continue to work without change.
+PROMPT_TEMPLATE_HASH: str = PROFILE_PROMPT_HASH
 
 _DEFAULT_MODEL = "claude-sonnet-4-6"
 _MAX_BODY_CHARS = 600   # truncate individual email bodies to keep prompt manageable
@@ -86,6 +59,17 @@ async def build_profile(
 ) -> ProfileResult:
     """Call Claude with the sampled sent emails and return a parsed ProfileResult.
 
+    Token budget:
+      max_tokens=2048 is the OUTPUT limit (Claude's JSON response is ~400-600
+      tokens in practice — 2048 gives generous headroom).
+      INPUT is not bounded by max_tokens. With 200 emails at 600 chars each the
+      user-turn is ~30k tokens, well within Claude Sonnet's 200k context window.
+
+    Call scope:
+      One Claude API call per profile rebuild job — not per thread and not per
+      sync. The profile rebuild job is triggered after the initial full sync
+      completes, and then again whenever ≥10 new sent messages have been ingested.
+
     Raises ValueError if Claude returns unparseable JSON.
     Raises anthropic.APIError on API-level failures.
     """
@@ -101,7 +85,7 @@ async def build_profile(
         system=[
             {
                 "type": "text",
-                "text": _SYSTEM_PROMPT,
+                "text": PROFILE_SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"},
             }
         ],
@@ -137,7 +121,15 @@ async def build_profile(
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _format_emails(samples: list[SentMessageSample]) -> str:
-    """Format sent email samples into the user-turn content string."""
+    """Format sent email samples into the user-turn content string.
+
+    This function is email-specific. When support for other platforms
+    (Slack, WhatsApp) is added, each will get its own formatter
+    (e.g. _format_slack_messages) that converts that platform's message
+    structure into the same kind of numbered block. The builder then selects
+    the right formatter based on the connector type — no inheritance needed
+    since formatting is a pure data transformation, not a behaviour hierarchy.
+    """
     parts: list[str] = [f"Here are {len(samples)} sent emails to analyse:\n"]
     for i, s in enumerate(samples, start=1):
         date_str = s.internal_date.strftime("%Y-%m-%d")
