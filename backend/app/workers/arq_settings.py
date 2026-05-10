@@ -7,6 +7,7 @@ import urllib.parse
 
 from arq.connections import RedisSettings
 
+from app.workers.draft.worker import draft_generate_job
 from app.workers.ingestion.worker import full_sync_job, incremental_sync_job
 from app.workers.profile.worker import profile_rebuild_job
 from app.workers.triage.worker import triage_job
@@ -37,7 +38,7 @@ class WorkerSettings:
     # ARQ dispatches jobs by function __name__, not by list position.
     # Order here does not matter — clients enqueue by name string, e.g.
     #   await arq.enqueue_job("full_sync_job", connection_id=..., job_id=...)
-    functions = [full_sync_job, incremental_sync_job, profile_rebuild_job, triage_job]
+    functions = [full_sync_job, incremental_sync_job, profile_rebuild_job, triage_job, draft_generate_job]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_from_env()
