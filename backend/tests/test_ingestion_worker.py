@@ -502,3 +502,56 @@ async def test_incremental_sync_checkpoint_expired_commits():
         await run_incremental_sync(db, _conn(), connector)
 
     db.commit.assert_called_once()
+
+
+# ── _enqueue_post_sync_jobs ───────────────────────────────────────────────────
+
+def _make_sf(db: AsyncMock) -> MagicMock:
+    """Build a session_factory mock whose __call__ returns a proper async ctx manager."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=db)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    return MagicMock(return_value=cm)
+
+
+@pytest.mark.asyncio
+async def test_enqueue_post_sync_jobs_enqueues_profile_rebuild():
+    from app.workers.ingestion.worker import _enqueue_post_sync_jobs
+
+    redis = AsyncMock()
+    db = AsyncMock()
+    thread_result = MagicMock()
+    thread_result.scalars.return_value.all.return_value = []
+    db.execute.return_value = thread_result
+
+    conn_id = uuid.uuid4()
+    await _enqueue_post_sync_jobs(
+        {"redis": redis, "session_factory": _make_sf(db)}, conn_id
+    )
+
+    redis.enqueue_job.assert_any_call("profile_rebuild_job", connection_id=str(conn_id))
+
+
+@pytest.mark.asyncio
+async def test_enqueue_post_sync_jobs_enqueues_triage_per_thread():
+    from app.workers.ingestion.worker import _enqueue_post_sync_jobs
+
+    redis = AsyncMock()
+    db = AsyncMock()
+    t1, t2 = uuid.uuid4(), uuid.uuid4()
+    thread_result = MagicMock()
+    thread_result.scalars.return_value.all.return_value = [t1, t2]
+    db.execute.return_value = thread_result
+
+    await _enqueue_post_sync_jobs(
+        {"redis": redis, "session_factory": _make_sf(db)}, uuid.uuid4()
+    )
+
+    triage_calls = [c for c in redis.enqueue_job.call_args_list if c[0][0] == "triage_job"]
+    assert len(triage_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_enqueue_post_sync_jobs_no_op_without_redis():
+    from app.workers.ingestion.worker import _enqueue_post_sync_jobs
+    await _enqueue_post_sync_jobs({}, uuid.uuid4())  # should not raise

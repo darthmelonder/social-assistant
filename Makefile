@@ -1,4 +1,4 @@
-.PHONY: up down logs test test-backend test-frontend lint install frontend-install frontend-dev
+.PHONY: up down logs test test-backend test-frontend lint install frontend-install frontend-dev worker
 
 up:
 	docker compose up -d
@@ -28,3 +28,6 @@ lint:
 
 frontend-dev:
 	cd frontend && npm run dev
+
+worker:
+	cd backend && arq app.workers.arq_settings.WorkerSettings

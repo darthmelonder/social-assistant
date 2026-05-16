@@ -28,6 +28,7 @@ from app.connectors.types import (
 )
 from app.models.platform_connection import PlatformConnection
 from app.models.sync_job import SyncJob
+from app.models.thread import Thread
 from app.services.token_service import get_valid_access_token
 from app.workers.ingestion.persistence import (
     mark_sync_job_complete,
@@ -190,6 +191,39 @@ async def full_sync_job(ctx: dict, *, connection_id: str, job_id: str) -> None:
         conn = await _load_connection(db, uuid.UUID(connection_id))
         job = await _load_job(db, uuid.UUID(job_id))
         await run_full_sync(db, conn, job, GmailConnector())
+
+    # After full sync, kick off profile rebuild and triage for all inbox threads
+    await _enqueue_post_sync_jobs(ctx, uuid.UUID(connection_id))
+
+
+async def _enqueue_post_sync_jobs(ctx: dict, connection_id: uuid.UUID) -> None:
+    """Enqueue profile rebuild + triage for all inbox threads after a full sync.
+
+    ARQ automatically adds ctx['redis'] (ArqRedis pool) so we can enqueue
+    jobs directly without going through the HTTP API.
+    """
+    redis = ctx.get("redis")
+    if redis is None:
+        return  # running outside ARQ (e.g. tests without a Redis stub)
+
+    await redis.enqueue_job("profile_rebuild_job", connection_id=str(connection_id))
+
+    session_factory = ctx["session_factory"]
+    async with session_factory() as db:
+        result = await db.execute(
+            select(Thread.id)
+            .where(
+                Thread.connection_id == connection_id,
+                Thread.deleted_at.is_(None),
+                Thread.is_in_inbox.is_(True),
+            )
+            .order_by(Thread.last_message_at.desc())
+            .limit(200)  # triage the 200 most recent inbox threads
+        )
+        thread_ids = result.scalars().all()
+
+    for tid in thread_ids:
+        await redis.enqueue_job("triage_job", thread_id=str(tid))
 
 
 async def incremental_sync_job(ctx: dict, *, connection_id: str) -> None:

@@ -87,13 +87,27 @@ async def run_triage(
 # ── ARQ entry point ───────────────────────────────────────────────────────────
 
 async def triage_job(ctx: dict, *, thread_id: str) -> None:
-    """ARQ job: triage one thread."""
+    """ARQ job: triage one thread and — when warranted — enqueue draft generation."""
     session_factory = ctx["session_factory"]
     async with session_factory() as db:
         thread, messages, profile = await _load_triage_context(db, uuid.UUID(thread_id))
         if thread is None:
             return  # thread was deleted before job ran
-        await run_triage(db, thread, messages, profile)
+        analysis = await run_triage(db, thread, messages, profile)
+
+    # Enqueue draft generation when triage says a reply is needed
+    if (
+        analysis is not None
+        and analysis.priority in (PriorityLevel.URGENT, PriorityLevel.IMPORTANT)
+        and analysis.requires_reply
+    ):
+        redis = ctx.get("redis")
+        if redis:
+            await redis.enqueue_job(
+                "draft_generate_job",
+                thread_id=thread_id,
+                analysis_id=str(analysis.id),
+            )
 
 
 async def _load_triage_context(
