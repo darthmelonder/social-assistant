@@ -267,3 +267,119 @@ def test_triage_job_registered_in_worker_settings():
 
     fn_names = [f.__name__ for f in WorkerSettings.functions]
     assert "triage_job" in fn_names
+
+
+# ── Draft auto-trigger ────────────────────────────────────────────────────────
+
+def _make_sf() -> MagicMock:
+    """session_factory mock whose __call__ returns a proper async context manager."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=AsyncMock())
+    cm.__aexit__ = AsyncMock(return_value=None)
+    return MagicMock(return_value=cm)
+
+
+def _mock_thread() -> MagicMock:
+    t = MagicMock()
+    t.id = uuid.uuid4()
+    t.user_id = uuid.uuid4()
+    t.subject = "Test"
+    return t
+
+
+def _make_analysis(priority: PriorityLevel, requires_reply: bool) -> MagicMock:
+    a = MagicMock()
+    a.priority = priority
+    a.requires_reply = requires_reply
+    a.id = uuid.uuid4()
+    return a
+
+
+@pytest.mark.asyncio
+async def test_triage_job_enqueues_draft_for_urgent_requires_reply():
+    from app.workers.triage.worker import triage_job
+
+    analysis = _make_analysis(PriorityLevel.URGENT, requires_reply=True)
+    redis = AsyncMock()
+    thread_id = str(uuid.uuid4())
+
+    with patch("app.workers.triage.worker._load_triage_context",
+               return_value=(_mock_thread(), [_mock_thread()], None)), \
+         patch("app.workers.triage.worker.run_triage", return_value=analysis):
+        await triage_job(
+            {"session_factory": _make_sf(), "redis": redis},
+            thread_id=thread_id,
+        )
+
+    redis.enqueue_job.assert_called_once_with(
+        "draft_generate_job",
+        thread_id=thread_id,
+        analysis_id=str(analysis.id),
+    )
+
+
+@pytest.mark.asyncio
+async def test_triage_job_enqueues_draft_for_important_requires_reply():
+    from app.workers.triage.worker import triage_job
+
+    analysis = _make_analysis(PriorityLevel.IMPORTANT, requires_reply=True)
+    redis = AsyncMock()
+
+    with patch("app.workers.triage.worker._load_triage_context",
+               return_value=(_mock_thread(), [_mock_thread()], None)), \
+         patch("app.workers.triage.worker.run_triage", return_value=analysis):
+        await triage_job(
+            {"session_factory": _make_sf(), "redis": redis},
+            thread_id=str(uuid.uuid4()),
+        )
+
+    redis.enqueue_job.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_triage_job_does_not_enqueue_draft_for_maybe():
+    from app.workers.triage.worker import triage_job
+
+    analysis = _make_analysis(PriorityLevel.MAYBE, requires_reply=True)
+    redis = AsyncMock()
+
+    with patch("app.workers.triage.worker._load_triage_context",
+               return_value=(_mock_thread(), [_mock_thread()], None)), \
+         patch("app.workers.triage.worker.run_triage", return_value=analysis):
+        await triage_job(
+            {"session_factory": _make_sf(), "redis": redis},
+            thread_id=str(uuid.uuid4()),
+        )
+
+    redis.enqueue_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_triage_job_does_not_enqueue_draft_when_no_reply_needed():
+    from app.workers.triage.worker import triage_job
+
+    analysis = _make_analysis(PriorityLevel.URGENT, requires_reply=False)
+    redis = AsyncMock()
+
+    with patch("app.workers.triage.worker._load_triage_context",
+               return_value=(_mock_thread(), [_mock_thread()], None)), \
+         patch("app.workers.triage.worker.run_triage", return_value=analysis):
+        await triage_job(
+            {"session_factory": _make_sf(), "redis": redis},
+            thread_id=str(uuid.uuid4()),
+        )
+
+    redis.enqueue_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_triage_job_no_draft_without_redis():
+    from app.workers.triage.worker import triage_job
+
+    analysis = _make_analysis(PriorityLevel.URGENT, requires_reply=True)
+
+    with patch("app.workers.triage.worker._load_triage_context",
+               return_value=(_mock_thread(), [_mock_thread()], None)), \
+         patch("app.workers.triage.worker.run_triage", return_value=analysis):
+        # ctx has no 'redis' — should not raise
+        await triage_job({"session_factory": _make_sf()}, thread_id=str(uuid.uuid4()))
