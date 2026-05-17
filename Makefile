@@ -1,5 +1,8 @@
 .PHONY: up down logs test test-backend test-frontend lint install frontend-install frontend-dev worker
 
+# Path to the project-level virtual environment binaries
+VENV := .venv/bin
+
 up:
 	docker compose up -d
 
@@ -10,13 +13,14 @@ logs:
 	docker compose logs -f
 
 install:
-	cd backend && pip install -e ".[dev]"
+	python3 -m venv .venv
+	$(VENV)/pip install -e "backend[dev]"
 
 frontend-install:
 	cd frontend && npm install
 
 test-backend:
-	cd backend && pytest
+	cd backend && ../$(VENV)/pytest
 
 test-frontend:
 	cd frontend && npm test
@@ -24,10 +28,10 @@ test-frontend:
 test: test-backend test-frontend
 
 lint:
-	cd backend && ruff check app tests
+	cd backend && ../$(VENV)/ruff check app tests
 
 frontend-dev:
 	cd frontend && npm run dev
 
 worker:
-	cd backend && arq app.workers.arq_settings.WorkerSettings
+	cd backend && ../$(VENV)/arq app.workers.arq_settings.WorkerSettings
