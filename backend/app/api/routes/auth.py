@@ -1,15 +1,17 @@
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_db
-from app.models.enums import ConnectionStatus, PlatformType
+from app.api.deps import get_current_user, get_db, get_redis
+from app.models.enums import ConnectionStatus, JobStatus, JobType, PlatformType
 from app.models.platform_connection import PlatformConnection
+from app.models.sync_job import SyncJob
 from app.models.user import User
 from app.services.encryption import get_encryption_service
 from app.services.google_oauth import GoogleOAuthError, get_google_oauth_service
@@ -39,6 +41,7 @@ async def google_callback(
     code: str,
     state: str,
     db: AsyncSession = Depends(get_db),
+    redis: Any | None = Depends(get_redis),
 ):
     """Handle Google OAuth2 callback: exchange code, upsert user + connection, issue JWTs."""
     google_svc = get_google_oauth_service()
@@ -92,6 +95,8 @@ async def google_callback(
         else None
     )
 
+    is_new_connection = conn is None
+
     if conn is None:
         conn = PlatformConnection(
             id=uuid.uuid4(),
@@ -122,6 +127,24 @@ async def google_callback(
             conn.encrypted_refresh_token = refresh_blob
 
     await db.commit()
+
+    # Auto-enqueue full sync on first connect
+    if is_new_connection and redis is not None:
+        sync_job = SyncJob(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            connection_id=conn.id,
+            job_type=JobType.FULL_SYNC,
+            status=JobStatus.QUEUED,
+            triggered_by="oauth_callback",
+        )
+        db.add(sync_job)
+        await db.commit()
+        await redis.enqueue_job(
+            "full_sync_job",
+            connection_id=str(conn.id),
+            job_id=str(sync_job.id),
+        )
 
     # ── Issue app JWTs ────────────────────────────────────────────────────────
     access_token = create_access_token(user.id)

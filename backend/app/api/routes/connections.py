@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_db
+from app.api.deps import get_current_user, get_db, get_redis
 from app.models.enums import ConnectionStatus, JobStatus, JobType
 from app.models.platform_connection import PlatformConnection
 from app.models.sync_job import SyncJob
@@ -62,20 +63,29 @@ async def trigger_sync(
     connection_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis: Any | None = Depends(get_redis),
 ):
-    """Enqueue a manual incremental sync for a connection."""
+    """Enqueue a manual full sync for a connection."""
     conn = await _get_connection_or_404(db, connection_id, current_user.id)
 
     job = SyncJob(
         id=uuid.uuid4(),
         user_id=current_user.id,
         connection_id=conn.id,
-        job_type=JobType.INCREMENTAL_SYNC,
+        job_type=JobType.FULL_SYNC,
         status=JobStatus.QUEUED,
         triggered_by="user",
     )
     db.add(job)
     await db.commit()
+
+    if redis is not None:
+        await redis.enqueue_job(
+            "full_sync_job",
+            connection_id=str(conn.id),
+            job_id=str(job.id),
+        )
+
     return {"job_id": str(job.id)}
 
 

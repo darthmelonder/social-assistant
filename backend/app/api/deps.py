@@ -1,4 +1,6 @@
-from fastapi import Depends, HTTPException, Security, status
+from typing import Any
+
+from fastapi import Depends, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +10,11 @@ from app.models.user import User
 from app.services.jwt_service import InvalidTokenError, decode_access_token
 
 _bearer = HTTPBearer()
+
+
+async def get_redis(request: Request) -> Any | None:
+    """Return the ARQ Redis pool stored on app.state, or None outside ARQ context."""
+    return getattr(request.app.state, "redis", None)
 
 
 async def get_current_user(

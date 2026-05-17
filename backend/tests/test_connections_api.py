@@ -39,7 +39,7 @@ def _mock_conn(
 
 
 def _setup_client(mock_user, mock_db) -> TestClient:
-    from app.api.deps import get_current_user, get_db
+    from app.api.deps import get_current_user, get_db, get_redis
     from app.main import app
 
     async def _db():
@@ -47,6 +47,7 @@ def _setup_client(mock_user, mock_db) -> TestClient:
 
     app.dependency_overrides[get_current_user] = lambda: mock_user
     app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[get_redis] = lambda: AsyncMock()
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()
