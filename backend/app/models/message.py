@@ -40,7 +40,7 @@ class Message(Base, TimestampMixin):
 
     internal_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     folder: Mapped[MessageFolder] = mapped_column(
-        Enum(MessageFolder, name="message_folder"),
+        Enum(MessageFolder, name="message_folder", values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=MessageFolder.INBOX,
     )

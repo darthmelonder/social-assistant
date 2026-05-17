@@ -23,7 +23,8 @@ class Thread(Base, TimestampMixin):
         ForeignKey("platform_connections.id", ondelete="CASCADE"), nullable=False, index=True
     )
     platform: Mapped[PlatformType] = mapped_column(
-        Enum(PlatformType, name="platform_type", create_type=False), nullable=False
+        Enum(PlatformType, name="platform_type", create_type=False, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
     )
     platform_thread_id: Mapped[str] = mapped_column(String, nullable=False)
     subject: Mapped[str | None] = mapped_column(Text, nullable=True)

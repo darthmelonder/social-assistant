@@ -20,7 +20,8 @@ class PlatformConnection(Base, TimestampMixin):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     platform: Mapped[PlatformType] = mapped_column(
-        Enum(PlatformType, name="platform_type"), nullable=False
+        Enum(PlatformType, name="platform_type", values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
     )
     platform_account_id: Mapped[str] = mapped_column(String, nullable=False)
     platform_email: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -36,7 +37,7 @@ class PlatformConnection(Base, TimestampMixin):
 
     # Sync state
     status: Mapped[ConnectionStatus] = mapped_column(
-        Enum(ConnectionStatus, name="connection_status"),
+        Enum(ConnectionStatus, name="connection_status", values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=ConnectionStatus.PENDING,
     )

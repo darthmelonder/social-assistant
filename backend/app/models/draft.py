@@ -29,7 +29,7 @@ class Draft(Base, TimestampMixin):
     tone_used: Mapped[str | None] = mapped_column(String, nullable=True)
 
     status: Mapped[DraftStatus] = mapped_column(
-        Enum(DraftStatus, name="draft_status"),
+        Enum(DraftStatus, name="draft_status", values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=DraftStatus.PENDING_REVIEW,
     )

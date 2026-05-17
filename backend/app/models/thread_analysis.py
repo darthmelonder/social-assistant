@@ -21,7 +21,8 @@ class ThreadAnalysis(Base):
     )
 
     priority: Mapped[PriorityLevel] = mapped_column(
-        Enum(PriorityLevel, name="priority_level"), nullable=False
+        Enum(PriorityLevel, name="priority_level", values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
     )
     priority_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
@@ -29,7 +30,8 @@ class ThreadAnalysis(Base):
     action_items: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     requires_reply: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sentiment: Mapped[SentimentType | None] = mapped_column(
-        Enum(SentimentType, name="sentiment_type"), nullable=True
+        Enum(SentimentType, name="sentiment_type", values_callable=lambda x: [e.value for e in x]),
+        nullable=True,
     )
 
     # Snapshot of what was analyzed — used to detect when re-triage is needed

@@ -21,10 +21,13 @@ class SyncJob(Base):
     )
 
     job_type: Mapped[JobType] = mapped_column(
-        Enum(JobType, name="job_type"), nullable=False
+        Enum(JobType, name="job_type", values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
     )
     status: Mapped[JobStatus] = mapped_column(
-        Enum(JobStatus, name="job_status"), nullable=False, default=JobStatus.QUEUED
+        Enum(JobStatus, name="job_status", values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+        default=JobStatus.QUEUED,
     )
 
     queue_job_id: Mapped[str | None] = mapped_column(String, nullable=True)
