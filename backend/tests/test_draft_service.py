@@ -1,4 +1,4 @@
-"""Unit tests for the draft service — Claude API fully mocked."""
+"""Unit tests for the draft service — LLM client is fully mocked."""
 from __future__ import annotations
 
 import json
@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.llm.base import LLMMessage, LLMResponse
 from app.workers.draft.prompts import DRAFT_BASE_HASH
 from app.workers.draft.service import DraftResult, _parse_draft_response, generate_draft
 
@@ -17,7 +18,7 @@ _W = "app.workers.draft.service"
 _VALID_RESPONSE = {
     "subject_line": "Re: Project Timeline",
     "body_plain": "Hi Alice,\n\nThanks for reaching out. I'll review the timeline and get back to you by Friday.\n\nBest,\nJatin",
-    "body_html": "<p>Hi Alice,</p><p>Thanks for reaching out. I'll review the timeline and get back to you by Friday.</p><p>Best,<br>Jatin</p>",
+    "body_html": "<p>Hi Alice,</p><p>Thanks for reaching out.</p>",
     "tone_used": "professional and warm",
 }
 
@@ -39,20 +40,19 @@ def _msg(msg_id: str = "msg-1") -> MagicMock:
     return m
 
 
-def _mock_anthropic(data: dict | str) -> MagicMock:
+def _mock_llm(data: dict | str, input_tokens=600, output_tokens=180,
+              cache_read=500, cache_write=100) -> AsyncMock:
     text = json.dumps(data) if isinstance(data, dict) else data
-    content = MagicMock()
-    content.text = text
-    usage = MagicMock()
-    usage.input_tokens = 600
-    usage.output_tokens = 180
-    usage.cache_read_input_tokens = 500
-    usage.cache_creation_input_tokens = 100
-    response = MagicMock()
-    response.content = [content]
-    response.usage = usage
     client = AsyncMock()
-    client.messages.create.return_value = response
+    client.model_id = "test-model"
+    client.complete.return_value = LLMResponse(
+        text=text,
+        model_id="test-model",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
+    )
     return client
 
 
@@ -78,50 +78,38 @@ def test_parse_raises_on_no_json():
 
 @pytest.mark.asyncio
 async def test_generate_draft_returns_draft_result():
-    client = _mock_anthropic(_VALID_RESPONSE)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        result = await generate_draft(_thread(), [_msg()], [])
+    result = await generate_draft(_thread(), [_msg()], [], llm_client=_mock_llm(_VALID_RESPONSE))
     assert isinstance(result, DraftResult)
 
 
 @pytest.mark.asyncio
 async def test_generate_draft_populates_body_plain():
-    client = _mock_anthropic(_VALID_RESPONSE)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        result = await generate_draft(_thread(), [_msg()], [])
+    result = await generate_draft(_thread(), [_msg()], [], llm_client=_mock_llm(_VALID_RESPONSE))
     assert "Hi Alice" in result.body_plain
 
 
 @pytest.mark.asyncio
 async def test_generate_draft_populates_subject_line():
-    client = _mock_anthropic(_VALID_RESPONSE)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        result = await generate_draft(_thread(), [_msg()], [])
+    result = await generate_draft(_thread(), [_msg()], [], llm_client=_mock_llm(_VALID_RESPONSE))
     assert result.subject_line == "Re: Project Timeline"
 
 
 @pytest.mark.asyncio
 async def test_generate_draft_populates_body_html():
-    client = _mock_anthropic(_VALID_RESPONSE)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        result = await generate_draft(_thread(), [_msg()], [])
+    result = await generate_draft(_thread(), [_msg()], [], llm_client=_mock_llm(_VALID_RESPONSE))
     assert result.body_html is not None
     assert "<p>" in result.body_html
 
 
 @pytest.mark.asyncio
 async def test_generate_draft_populates_tone_used():
-    client = _mock_anthropic(_VALID_RESPONSE)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        result = await generate_draft(_thread(), [_msg()], [])
+    result = await generate_draft(_thread(), [_msg()], [], llm_client=_mock_llm(_VALID_RESPONSE))
     assert result.tone_used == "professional and warm"
 
 
 @pytest.mark.asyncio
 async def test_generate_draft_records_token_counts():
-    client = _mock_anthropic(_VALID_RESPONSE)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        result = await generate_draft(_thread(), [_msg()], [])
+    result = await generate_draft(_thread(), [_msg()], [], llm_client=_mock_llm(_VALID_RESPONSE))
     assert result.input_tokens == 600
     assert result.output_tokens == 180
     assert result.cache_read_tokens == 500
@@ -130,37 +118,30 @@ async def test_generate_draft_records_token_counts():
 
 @pytest.mark.asyncio
 async def test_generate_draft_records_prompt_hash():
-    client = _mock_anthropic(_VALID_RESPONSE)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        result = await generate_draft(_thread(), [_msg()], [])
+    result = await generate_draft(_thread(), [_msg()], [], llm_client=_mock_llm(_VALID_RESPONSE))
     assert result.prompt_template_hash == DRAFT_BASE_HASH
 
 
 @pytest.mark.asyncio
-async def test_generate_draft_uses_two_cached_system_blocks():
-    client = _mock_anthropic(_VALID_RESPONSE)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        await generate_draft(_thread(), [_msg()], [])
-    call_kwargs = client.messages.create.call_args[1]
-    system_blocks = call_kwargs["system"]
-    assert len(system_blocks) == 2
-    assert all(b.get("cache_control") == {"type": "ephemeral"} for b in system_blocks)
+async def test_generate_draft_records_model_id():
+    result = await generate_draft(_thread(), [_msg()], [], llm_client=_mock_llm(_VALID_RESPONSE))
+    assert result.model_id == "test-model"
 
 
 @pytest.mark.asyncio
-async def test_generate_draft_passes_model_to_api():
-    client = _mock_anthropic(_VALID_RESPONSE)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        await generate_draft(_thread(), [_msg()], [], model="claude-opus-4-7")
-    assert client.messages.create.call_args[1]["model"] == "claude-opus-4-7"
+async def test_generate_draft_sends_two_cacheable_system_blocks():
+    client = _mock_llm(_VALID_RESPONSE)
+    await generate_draft(_thread(), [_msg()], [], llm_client=client)
+    call_kwargs = client.complete.call_args.kwargs
+    blocks = call_kwargs["system_blocks"]
+    assert len(blocks) == 2
+    assert all(isinstance(b, LLMMessage) and b.cacheable for b in blocks)
 
 
 @pytest.mark.asyncio
 async def test_generate_draft_handles_missing_optional_fields():
     minimal = {"body_plain": "Thanks, I'll look into it."}
-    client = _mock_anthropic(minimal)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        result = await generate_draft(_thread(), [_msg()], [])
+    result = await generate_draft(_thread(), [_msg()], [], llm_client=_mock_llm(minimal))
     assert result.body_plain == "Thanks, I'll look into it."
     assert result.subject_line is None
     assert result.body_html is None
@@ -175,21 +156,18 @@ async def test_generate_draft_raises_on_no_messages():
 
 @pytest.mark.asyncio
 async def test_generate_draft_raises_on_unparseable_response():
-    client = _mock_anthropic("This is not JSON.")
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        with pytest.raises(ValueError, match="Could not parse"):
-            await generate_draft(_thread(), [_msg()], [])
+    with pytest.raises(ValueError, match="Could not parse"):
+        await generate_draft(_thread(), [_msg()], [], llm_client=_mock_llm("This is not JSON."))
 
 
 @pytest.mark.asyncio
 async def test_generate_draft_passes_action_items_to_formatter():
-    client = _mock_anthropic(_VALID_RESPONSE)
+    client = _mock_llm(_VALID_RESPONSE)
     thread = _thread()
     msg = _msg()
     items = [{"description": "Confirm budget", "due_date_hint": None, "assignee_hint": None}]
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client), \
-         patch(f"{_W}.format_draft_request", return_value="formatted content") as mock_fmt:
-        await generate_draft(thread, [msg], items)
+    with patch(f"{_W}.format_draft_request", return_value="formatted content") as mock_fmt:
+        await generate_draft(thread, [msg], items, llm_client=client)
     mock_fmt.assert_called_once_with(thread, [msg], items)
 
 
@@ -199,12 +177,12 @@ async def test_generate_draft_with_profile_and_examples():
     profile.voice_summary = "Direct writer."
     profile.tone_attributes = ["concise"]
     profile.attributes = {"vocabulary_sample": [], "greeting_patterns": [], "sign_off_patterns": []}
-    example = _msg("ex-1")
-
-    client = _mock_anthropic(_VALID_RESPONSE)
-    with patch(f"{_W}.anthropic.AsyncAnthropic", return_value=client):
-        result = await generate_draft(_thread(), [_msg()], [], profile=profile, example_messages=[example])
-
+    result = await generate_draft(
+        _thread(), [_msg()], [],
+        profile=profile,
+        example_messages=[_msg("ex-1")],
+        llm_client=_mock_llm(_VALID_RESPONSE),
+    )
     assert isinstance(result, DraftResult)
 
 
@@ -215,7 +193,7 @@ def test_draft_base_hash_is_16_chars():
 
 
 def test_draft_base_hash_is_deterministic():
-    from app.workers.draft.prompts import DRAFT_BASE_PROMPT
     import hashlib
+    from app.workers.draft.prompts import DRAFT_BASE_PROMPT
     expected = hashlib.sha256(DRAFT_BASE_PROMPT.encode()).hexdigest()[:16]
     assert DRAFT_BASE_HASH == expected

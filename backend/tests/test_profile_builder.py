@@ -1,11 +1,13 @@
-"""Unit tests for the profile builder — Claude API is fully mocked."""
+"""Unit tests for the profile builder — LLM client is fully mocked."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.llm.base import LLMMessage, LLMResponse
 from app.workers.profile.builder import (
     PROMPT_TEMPLATE_HASH,
     ProfileResult,
@@ -31,7 +33,6 @@ _VALID_PROFILE = {
 
 def _sample(
     msg_id: str = "msg-1",
-    days_ago: int = 5,
     body: str = "Hello, please find the update attached.",
     subject: str = "Update",
 ) -> SentMessageSample:
@@ -45,29 +46,19 @@ def _sample(
     )
 
 
-def _mock_anthropic_response(json_content: str | dict) -> MagicMock:
-    """Build a mock anthropic response object."""
-    import json as _json
-    text = _json.dumps(json_content) if isinstance(json_content, dict) else json_content
-
-    content_block = MagicMock()
-    content_block.text = text
-
-    usage = MagicMock()
-    usage.input_tokens = 1000
-    usage.output_tokens = 200
-    usage.cache_read_input_tokens = 800
-    usage.cache_creation_input_tokens = 200
-
-    response = MagicMock()
-    response.content = [content_block]
-    response.usage = usage
-    return response
-
-
-def _mock_client(response: MagicMock) -> MagicMock:
+def _mock_llm(text: str | dict, input_tokens=1000, output_tokens=200,
+              cache_read=800, cache_write=200) -> AsyncMock:
+    content = json.dumps(text) if isinstance(text, dict) else text
     client = AsyncMock()
-    client.messages.create.return_value = response
+    client.model_id = "test-model"
+    client.complete.return_value = LLMResponse(
+        text=content,
+        model_id="test-model",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
+    )
     return client
 
 
@@ -104,7 +95,7 @@ def test_format_emails_handles_none_body():
     s = _sample()
     s.body_plain = None
     content = _format_emails([s])
-    assert "(none)" in content or content  # shouldn't raise
+    assert content  # shouldn't raise
 
 
 def test_format_emails_handles_none_subject():
@@ -118,7 +109,7 @@ def test_format_emails_limits_to_recipients():
     s = _sample()
     s.to_emails = ["a@x.com", "b@x.com", "c@x.com", "d@x.com"]
     content = _format_emails([s])
-    assert "d@x.com" not in content  # only first 3 shown
+    assert "d@x.com" not in content
 
 
 # ── _parse_json ───────────────────────────────────────────────────────────────
@@ -148,45 +139,25 @@ def test_parse_json_handles_whitespace():
 
 @pytest.mark.asyncio
 async def test_build_profile_returns_profile_result():
-    samples = [_sample()]
-    mock_client = _mock_client(_mock_anthropic_response(_VALID_PROFILE))
-
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await build_profile(samples)
-
+    result = await build_profile([_sample()], llm_client=_mock_llm(_VALID_PROFILE))
     assert isinstance(result, ProfileResult)
 
 
 @pytest.mark.asyncio
 async def test_build_profile_populates_voice_summary():
-    samples = [_sample()]
-    mock_client = _mock_client(_mock_anthropic_response(_VALID_PROFILE))
-
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await build_profile(samples)
-
+    result = await build_profile([_sample()], llm_client=_mock_llm(_VALID_PROFILE))
     assert result.voice_summary == _VALID_PROFILE["voice_summary"]
 
 
 @pytest.mark.asyncio
 async def test_build_profile_populates_tone_attributes():
-    samples = [_sample()]
-    mock_client = _mock_client(_mock_anthropic_response(_VALID_PROFILE))
-
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await build_profile(samples)
-
+    result = await build_profile([_sample()], llm_client=_mock_llm(_VALID_PROFILE))
     assert result.tone_attributes == ["professional", "concise", "direct"]
 
 
 @pytest.mark.asyncio
 async def test_build_profile_populates_attributes_jsonb():
-    samples = [_sample()]
-    mock_client = _mock_client(_mock_anthropic_response(_VALID_PROFILE))
-
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await build_profile(samples)
-
+    result = await build_profile([_sample()], llm_client=_mock_llm(_VALID_PROFILE))
     assert result.attributes["formality_score"] == 0.7
     assert result.attributes["vocabulary_sample"] == _VALID_PROFILE["vocabulary_sample"]
     assert result.attributes["topic_clusters"] == _VALID_PROFILE["topic_clusters"]
@@ -196,12 +167,7 @@ async def test_build_profile_populates_attributes_jsonb():
 
 @pytest.mark.asyncio
 async def test_build_profile_records_token_counts():
-    samples = [_sample()]
-    mock_client = _mock_client(_mock_anthropic_response(_VALID_PROFILE))
-
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await build_profile(samples)
-
+    result = await build_profile([_sample()], llm_client=_mock_llm(_VALID_PROFILE))
     assert result.input_tokens == 1000
     assert result.output_tokens == 200
     assert result.cache_read_tokens == 800
@@ -211,36 +177,29 @@ async def test_build_profile_records_token_counts():
 @pytest.mark.asyncio
 async def test_build_profile_records_messages_analyzed_count():
     samples = [_sample(f"m{i}") for i in range(5)]
-    mock_client = _mock_client(_mock_anthropic_response(_VALID_PROFILE))
-
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await build_profile(samples)
-
+    result = await build_profile(samples, llm_client=_mock_llm(_VALID_PROFILE))
     assert result.messages_analyzed_count == 5
 
 
 @pytest.mark.asyncio
 async def test_build_profile_records_prompt_template_hash():
-    samples = [_sample()]
-    mock_client = _mock_client(_mock_anthropic_response(_VALID_PROFILE))
-
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await build_profile(samples)
-
+    result = await build_profile([_sample()], llm_client=_mock_llm(_VALID_PROFILE))
     assert result.prompt_template_hash == PROMPT_TEMPLATE_HASH
 
 
 @pytest.mark.asyncio
-async def test_build_profile_uses_prompt_caching():
-    samples = [_sample()]
-    mock_client = _mock_client(_mock_anthropic_response(_VALID_PROFILE))
+async def test_build_profile_records_model_id():
+    result = await build_profile([_sample()], llm_client=_mock_llm(_VALID_PROFILE))
+    assert result.model_id == "test-model"
 
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        await build_profile(samples)
 
-    call_kwargs = mock_client.messages.create.call_args[1]
-    system_block = call_kwargs["system"][0]
-    assert system_block.get("cache_control") == {"type": "ephemeral"}
+@pytest.mark.asyncio
+async def test_build_profile_sends_cacheable_system_block():
+    client = _mock_llm(_VALID_PROFILE)
+    await build_profile([_sample()], llm_client=client)
+    call_kwargs = client.complete.call_args.kwargs
+    assert len(call_kwargs["system_blocks"]) == 1
+    assert call_kwargs["system_blocks"][0].cacheable is True
 
 
 @pytest.mark.asyncio
@@ -251,44 +210,22 @@ async def test_build_profile_raises_on_empty_samples():
 
 @pytest.mark.asyncio
 async def test_build_profile_raises_on_unparseable_response():
-    samples = [_sample()]
-    mock_client = _mock_client(_mock_anthropic_response("This is not JSON at all"))
-
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        with pytest.raises(ValueError, match="Could not parse"):
-            await build_profile(samples)
+    with pytest.raises(ValueError, match="Could not parse"):
+        await build_profile([_sample()], llm_client=_mock_llm("This is not JSON at all"))
 
 
 @pytest.mark.asyncio
 async def test_build_profile_handles_json_with_surrounding_text():
-    import json
     text = f"Here is the profile:\n{json.dumps(_VALID_PROFILE)}\n"
-    samples = [_sample()]
-    mock_client = _mock_client(_mock_anthropic_response(text))
-
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await build_profile(samples)
-
+    result = await build_profile([_sample()], llm_client=_mock_llm(text))
     assert result.voice_summary == _VALID_PROFILE["voice_summary"]
-
-
-@pytest.mark.asyncio
-async def test_build_profile_passes_model_to_api():
-    samples = [_sample()]
-    mock_client = _mock_client(_mock_anthropic_response(_VALID_PROFILE))
-
-    with patch("app.workers.profile.builder.anthropic.AsyncAnthropic", return_value=mock_client):
-        await build_profile(samples, model="claude-opus-4-7")
-
-    call_kwargs = mock_client.messages.create.call_args[1]
-    assert call_kwargs["model"] == "claude-opus-4-7"
 
 
 # ── PROMPT_TEMPLATE_HASH ──────────────────────────────────────────────────────
 
 def test_prompt_template_hash_is_deterministic():
-    from app.workers.profile.prompts import PROFILE_SYSTEM_PROMPT
     import hashlib
+    from app.workers.profile.prompts import PROFILE_SYSTEM_PROMPT
     expected = hashlib.sha256(PROFILE_SYSTEM_PROMPT.encode()).hexdigest()[:16]
     assert PROMPT_TEMPLATE_HASH == expected
 

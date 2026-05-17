@@ -25,8 +25,10 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str
     GOOGLE_REDIRECT_URI: str
 
-    # Anthropic
-    ANTHROPIC_API_KEY: str
+    # LLM provider — "gemini" (default) or "anthropic"
+    LLM_PROVIDER: str = "gemini"
+    GEMINI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
 
     # JWT
     JWT_SECRET: str

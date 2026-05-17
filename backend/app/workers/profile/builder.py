@@ -1,100 +1,57 @@
-"""Profile builder — calls Claude to analyse a user's sent emails.
-
-Prompt structure (see CLAUDE.md):
-  SYSTEM [cached]  instruction + output JSON schema  (lives in prompts.py)
-  USER   [varies]  formatted sent email samples
-
-The system block is marked cache_control=ephemeral so repeated calls
-(e.g. incremental profile rebuilds) reuse the cached tokens.
-"""
+"""Profile builder — calls the configured LLM to analyse a user's sent emails."""
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass, field
 
-import anthropic
-
+from app.llm.base import LLMClient, LLMMessage
 from app.workers.profile.prompts import PROFILE_PROMPT_HASH, PROFILE_SYSTEM_PROMPT
 from app.workers.profile.sampler import SentMessageSample
 
-# Re-export so callers that previously imported PROMPT_TEMPLATE_HASH from here
-# continue to work without change.
 PROMPT_TEMPLATE_HASH: str = PROFILE_PROMPT_HASH
 
-_DEFAULT_MODEL = "claude-sonnet-4-6"
-_MAX_BODY_CHARS = 600   # truncate individual email bodies to keep prompt manageable
+_MAX_BODY_CHARS = 600
 
-
-# ── Return type ───────────────────────────────────────────────────────────────
 
 @dataclass
 class ProfileResult:
-    """Parsed profile attributes + full model provenance for user_profiles row."""
-    # Core profile fields (top-level columns in user_profiles)
     voice_summary: str
     tone_attributes: list[str]
-
-    # Full structured output → user_profiles.attributes JSONB
     attributes: dict = field(default_factory=dict)
-
-    # Model provenance
-    model_id: str = _DEFAULT_MODEL
-    model_version: str = _DEFAULT_MODEL
+    model_id: str = ""
+    model_version: str = ""
     prompt_template_hash: str = PROMPT_TEMPLATE_HASH
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
-
-    # Source data stats
     messages_analyzed_count: int = 0
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
 async def build_profile(
     samples: list[SentMessageSample],
-    model: str = _DEFAULT_MODEL,
+    llm_client: LLMClient | None = None,
 ) -> ProfileResult:
-    """Call Claude with the sampled sent emails and return a parsed ProfileResult.
+    """Call the LLM with sampled sent emails and return a parsed ProfileResult.
 
-    Token budget:
-      max_tokens=2048 is the OUTPUT limit (Claude's JSON response is ~400-600
-      tokens in practice — 2048 gives generous headroom).
-      INPUT is not bounded by max_tokens. With 200 emails at 600 chars each the
-      user-turn is ~30k tokens, well within Claude Sonnet's 200k context window.
-
-    Call scope:
-      One Claude API call per profile rebuild job — not per thread and not per
-      sync. The profile rebuild job is triggered after the initial full sync
-      completes, and then again whenever ≥10 new sent messages have been ingested.
-
-    Raises ValueError if Claude returns unparseable JSON.
-    Raises anthropic.APIError on API-level failures.
+    Raises ValueError if the LLM returns unparseable JSON or samples is empty.
     """
     if not samples:
         raise ValueError("Cannot build a profile from zero sent messages")
 
-    user_content = _format_emails(samples)
+    if llm_client is None:
+        from app.llm import get_llm_client
+        llm_client = get_llm_client()
 
-    client = anthropic.AsyncAnthropic()
-    response = await client.messages.create(
-        model=model,
+    user_content = _format_emails(samples)
+    response = await llm_client.complete(
+        system_blocks=[LLMMessage(content=PROFILE_SYSTEM_PROMPT, cacheable=True)],
+        user_content=user_content,
         max_tokens=2048,
-        system=[
-            {
-                "type": "text",
-                "text": PROFILE_SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user_content}],
     )
 
-    raw_text = response.content[0].text
-    data = _parse_json(raw_text)
-    usage = response.usage
+    data = _parse_json(response.text)
 
     return ProfileResult(
         voice_summary=data.get("voice_summary", ""),
@@ -107,29 +64,18 @@ async def build_profile(
             "greeting_patterns": data.get("greeting_patterns", []),
             "sign_off_patterns": data.get("sign_off_patterns", []),
         },
-        model_id=model,
-        model_version=model,
+        model_id=response.model_id,
+        model_version=response.model_id,
         prompt_template_hash=PROMPT_TEMPLATE_HASH,
-        input_tokens=getattr(usage, "input_tokens", 0),
-        output_tokens=getattr(usage, "output_tokens", 0),
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0),
-        cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0),
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        cache_read_tokens=response.cache_read_tokens,
+        cache_write_tokens=response.cache_write_tokens,
         messages_analyzed_count=len(samples),
     )
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
-
 def _format_emails(samples: list[SentMessageSample]) -> str:
-    """Format sent email samples into the user-turn content string.
-
-    This function is email-specific. When support for other platforms
-    (Slack, WhatsApp) is added, each will get its own formatter
-    (e.g. _format_slack_messages) that converts that platform's message
-    structure into the same kind of numbered block. The builder then selects
-    the right formatter based on the connector type — no inheritance needed
-    since formatting is a pure data transformation, not a behaviour hierarchy.
-    """
     parts: list[str] = [f"Here are {len(samples)} sent emails to analyse:\n"]
     for i, s in enumerate(samples, start=1):
         date_str = s.internal_date.strftime("%Y-%m-%d")
@@ -145,19 +91,15 @@ def _format_emails(samples: list[SentMessageSample]) -> str:
 
 
 def _parse_json(text: str) -> dict:
-    """Extract and parse a JSON object from Claude's response text."""
     text = text.strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-
-    # Fallback: extract first {...} block (handles leading/trailing prose)
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group())
         except json.JSONDecodeError:
             pass
-
-    raise ValueError(f"Could not parse profile JSON from Claude response: {text[:300]}")
+    raise ValueError(f"Could not parse profile JSON from LLM response: {text[:300]}")
