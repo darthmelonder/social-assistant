@@ -5,7 +5,7 @@ from google.genai import types as genai_types
 
 from app.llm.base import LLMClient, LLMMessage, LLMResponse
 
-_DEFAULT_MODEL = "gemini-2.0-flash"
+_DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 
 
 class GeminiClient(LLMClient):
