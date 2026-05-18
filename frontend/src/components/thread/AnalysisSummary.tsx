@@ -1,48 +1,67 @@
 import type { Analysis, Priority } from '../../types';
 
-const PRIORITY_STYLE: Record<Priority, string> = {
-  urgent:    'bg-red-100 text-red-800',
-  important: 'bg-orange-100 text-orange-800',
-  maybe:     'bg-yellow-100 text-yellow-800',
-  skip:      'bg-gray-100 text-gray-600',
+const BADGE: Record<Priority, string> = {
+  urgent:    'badge-urgent',
+  important: 'badge-important',
+  maybe:     'badge-maybe',
+  skip:      'badge-skip',
 };
 
-interface Props {
-  analysis: Analysis;
-}
+const SENTIMENT_COLOR: Record<string, string> = {
+  positive: 'text-emerald-400',
+  neutral:  'text-slate-400',
+  negative: 'text-red-400',
+  mixed:    'text-amber-400',
+};
+
+interface Props { analysis: Analysis; }
 
 export default function AnalysisSummary({ analysis }: Props) {
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <span className={`text-xs font-medium px-2 py-1 rounded-full ${PRIORITY_STYLE[analysis.priority]}`}>
+    <div className="space-y-4">
+
+      {/* Badges row */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={`badge ${BADGE[analysis.priority]}`}>
           {analysis.priority.charAt(0).toUpperCase() + analysis.priority.slice(1)}
         </span>
         {analysis.requires_reply && (
-          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">
-            Reply needed
-          </span>
+          <span className="badge badge-urgent">Reply needed</span>
         )}
         {analysis.sentiment && (
-          <span className="text-xs text-gray-500">{analysis.sentiment}</span>
+          <span className={`text-xs font-medium ${SENTIMENT_COLOR[analysis.sentiment] ?? 'text-slate-400'}`}>
+            {analysis.sentiment}
+          </span>
+        )}
+        {analysis.priority_confidence != null && (
+          <span className="text-xs text-slate-600 ml-auto">
+            {Math.round(analysis.priority_confidence * 100)}% confident
+          </span>
         )}
       </div>
 
-      <p className="text-sm text-gray-700 leading-relaxed">{analysis.summary}</p>
+      {/* Summary */}
+      <p className="text-sm text-slate-300 leading-relaxed">{analysis.summary}</p>
 
+      {/* Action items */}
       {analysis.action_items.length > 0 && (
         <div>
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+          <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-widest mb-2.5">
             Action items
           </p>
-          <ul className="space-y-1">
+          <ul className="space-y-2" role="list">
             {analysis.action_items.map((item, i) => (
-              <li key={i} className="text-sm text-gray-700 flex gap-2">
-                <span className="text-gray-400 shrink-0">•</span>
-                <span>
+              <li key={i} className="flex items-start gap-2.5">
+                <span className="mt-1 w-1.5 h-1.5 rounded-full bg-violet-500/60 shrink-0" aria-hidden="true" />
+                <span className="text-sm text-slate-300 leading-snug">
                   {item.description}
                   {item.due_date_hint && (
-                    <span className="text-gray-400 ml-1">({item.due_date_hint})</span>
+                    <span className="ml-1.5 text-xs text-slate-500 bg-white/[0.05] px-1.5 py-0.5 rounded-md">
+                      ({item.due_date_hint})
+                    </span>
+                  )}
+                  {item.assignee_hint && (
+                    <span className="ml-1 text-xs text-slate-500">→ {item.assignee_hint}</span>
                   )}
                 </span>
               </li>
